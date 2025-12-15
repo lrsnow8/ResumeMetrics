@@ -2,8 +2,11 @@ import re
 import pandas as pd
 import textstat
 from language_tool_python import LanguageTool
-
+import nltk
+from nltk.stem import WordNetLemmatizer
+from nltk.corpus import wordnet
 #this can be imported or run as a script with the file hardcoded within the main at the bottom
+#importing will require using the nlp_spin_up as declared in analyze_dataframe and giving a path to the desired action verbs
 
 """
 analyze_text(text) - runs all and returns a dict of all the metrics for a given string
@@ -20,14 +23,14 @@ dale_chall - DC score from textstat, returns float
 ari_score - ARI score from textstat, returns float
 grammar_errors - finds grammar errors with LanguageTool from language_tool_python, returns sum of errors as int
 grammar_score - score for grammer = (count_words - grammar_errors)/ count_words, so higher is better, 1.0 is max
-action_verb_count - counts action verbs from a hardcoded list of actions verbs, returns a int
+verb_finder - tokenizes verbs in the with nltk aprt of speech tagger and lemmatizes them, then checks to see if verbs are in the verb list. Returns the length of the list of verbs foudn and the list of found verbs
+readability_score - calculates raw FRE, GF, and DC scores, clamps them to their intended ranges and normalizes them, scores are averaged to return a final "readability_score"
 """
-
 
 
 #EFFORT METRICS (Mousavi)
 
-def count_words(text):
+def count_words(text): 
     #M1: Count number of words
     if not text or pd.isna(text):
         return 0
@@ -35,10 +38,13 @@ def count_words(text):
 
 
 def count_characters(text):
-    #M2: Count number of characters
     if not text or pd.isna(text):
         return 0
-    return len(text)
+    count = 0
+    for char in text:
+        if char.isalnum():
+            count += 1
+    return count
 
 
 #(Abraham & Burbano)
@@ -46,7 +52,7 @@ def count_characters(text):
 def keyword_presence(text):
 
     #Check if keywords are present (1=yes, 0=no)
-    
+
 
     if not text or pd.isna(text):
         return 0
@@ -56,11 +62,14 @@ def keyword_presence(text):
     # Check for problem+solv* within 3 words
     problem_solving = r'\bproblem\b(?:\s+\S+){0,3}\s+\bsolv\w*\b|\bsolv\w*\b(?:\s+\S+){0,3}\s+\bproblem\b'
 
+    # Check for problem+resolv* within 3 words
+    problem_resolving = r'\bproblem\b(?:\s+\S+){0,3}\s+\bresolv\w*\b|\bresolv\w*\b(?:\s+\S+){0,3}\s+\bproblem\b'
+
     # Check for skill* and analytic*
     skill = r'\bskill\w*\b'
     analytic = r'\banalytic\w*\b'
 
-    if re.search(problem_solving, text_lower) or re.search(skill, text_lower) or re.search(analytic, text_lower):
+    if re.search(problem_solving, text_lower) or re.search(problem_resolving, text_lower) or re.search(skill, text_lower) or re.search(analytic, text_lower):
         return 1
     return 0
 
@@ -78,6 +87,10 @@ def keyword_count(text):
     problem_solving = r'\bproblem\b(?:\s+\S+){0,3}\s+\bsolv\w*\b|\bsolv\w*\b(?:\s+\S+){0,3}\s+\bproblem\b'
     count += len(re.findall(problem_solving, text_lower))
 
+    #count the problem resolve combination
+    problem_resolving = r'\bproblem\b(?:\s+\S+){0,3}\s+\bresolv\w*\b|\bresolv\w*\b(?:\s+\S+){0,3}\s+\bproblem\b'
+    count += len(re.findall(problem_resolving, text_lower))
+
     # Count skill and analytic
     count += len(re.findall(r'\bskill\w*\b', text_lower))
     count += len(re.findall(r'\banalytic\w*\b', text_lower))
@@ -92,7 +105,7 @@ def keyword_ratio(text):
         return 0.0
     return keyword_count(text) / words
 
-
+"""
 #(Mousavi,Yang)
 #TODO inverse FRE score and normalize all three scores from 0-1
 def flesch_reading_ease(text):
@@ -123,6 +136,33 @@ def dale_chall(text):
         return textstat.dale_chall_readability_score(text)
     except:
         return 0.0
+"""
+#final returned score
+def readability_score(text):
+    if not text or pd.isna(text) or len(text.strip()) == 0:
+        return 0.0
+    try:
+        #raw scores
+        fre = textstat.flesch_reading_ease(text)
+        gf = textstat.gunning_fog(text)
+        dc = textstat.dale_chall_readability_score(text)
+
+        #FRE clamped (0-100) invert and normalize
+        fre_clamped = max(0.0, min(100.0, fre))
+        norm_inv_FRE = (100.0 - fre_clamped) / 100.0
+
+        #GF (0, 20) and normalize
+        gf_clamped = max(0.0, min(20.0, gf))
+        norm_GF = gf_clamped / 20.0
+
+        #DC to (0, 10) and normalize
+        dc_clamped = max(0.0, min(10.0, dc))
+        norm_DC = dc_clamped / 10.0
+
+        return (norm_inv_FRE+norm_GF+norm_DC)/3
+    except:
+        return 0.0
+        
 
 
 def ari_score(text):
@@ -169,58 +209,58 @@ def grammar_score(text):
     score = (words - errors)/words
     return score
 
+#action verb set
+ACTION_VERBS = 'action_verbs.txt'
 
+# Global variables for action verb analysis
+action_verbs = None
+lemmatizer = None
 
-# list of resume action words
+def verb_finder(tagged_words, action_verbs, lemmatizer):
+    if not tagged_words: return 0, []
+    #tagged words  is a list of tuples from nltk part of speech tagger (word, tag) like (attack, V) where V is for verb
+    counted_verbs = [] 
+   
 
-# found this other implementation, could maybe work but might explode the compute time to be unrealistic for a large amount of text 
-# https://stackoverflow.com/questions/62979191/a-way-to-find-action-verb-cognition-verb-stative-verb-and-trigger-words-using
-ACTION_VERBS = {
-    'achieved', 'adapted', 'administered', 'analyzed', 'applied',
-    'approved', 'arranged', 'assembled', 'assessed', 'assisted',
-    'built', 'calculated', 'clarified', 'coached', 'collected',
-    'communicated', 'completed', 'conducted', 'coordinated', 'created',
-    'delivered', 'demonstrated', 'designed', 'developed', 'devised',
-    'directed', 'discovered', 'drafted', 'edited', 'educated',
-    'eliminated', 'enabled', 'encouraged', 'engineered', 'enhanced',
-    'established', 'evaluated', 'examined', 'exceeded', 'executed',
-    'expanded', 'facilitated', 'focused', 'formulated', 'generated',
-    'guided', 'hired', 'identified', 'illustrated', 'implemented',
-    'improved', 'increased', 'influenced', 'initiated', 'innovated',
-    'inspected', 'installed', 'instructed', 'integrated', 'introduced',
-    'investigated', 'launched', 'led', 'maintained', 'managed',
-    'marketed', 'maximized', 'measured', 'mentored', 'minimized',
-    'modified', 'monitored', 'motivated', 'negotiated', 'operated',
-    'optimized', 'organized', 'originated', 'oversaw', 'performed',
-    'persuaded', 'pioneered', 'planned', 'prepared', 'presented',
-    'prioritized', 'processed', 'produced', 'programmed', 'promoted',
-    'proposed', 'provided', 'published', 'recommended', 'recorded',
-    'recruited', 'redesigned', 'reduced', 'refined', 'regulated',
-    'reorganized', 'repaired', 'replaced', 'reported', 'represented',
-    'researched', 'resolved', 'restored', 'restructured', 'reviewed',
-    'revised', 'saved', 'scheduled', 'screened', 'secured',
-    'selected', 'served', 'simplified', 'solved', 'spearheaded',
-    'standardized', 'streamlined', 'strengthened', 'structured', 'studied',
-    'supervised', 'supported', 'tested', 'tracked', 'trained',
-    'transformed', 'updated', 'upgraded', 'utilized', 'validated',
-    'verified', 'wrote'
-}
+    #for the tagged words in a text, lemmatize the verbs and check to see if it is in the action_verbs list
+    for word, tag in tagged_words:
+        tag = tag[0].upper() 
 
+        if tag != 'V':
+             continue
+        
+        lemma = lemmatizer.lemmatize(word.lower(), pos=wordnet.VERB)
+        if lemma in action_verbs:
+            counted_verbs.append(word)
+            
+    return len(counted_verbs), counted_verbs
 
-def action_verb_count(text):
-    #count action verbs
-    if not text or pd.isna(text):
-        return 0
+def nlp_spin_up(ACTION_VERBS):
+    global action_verbs, lemmatizer
+    #open the ACTION_VERBS path and create the lemmatizer instance
+    try:
+        with open(ACTION_VERBS, 'r') as f:
+            action_verbs = {line.strip().lower() for line in f if line.strip()}
+    except FileNotFoundError:
+        print(f"{ACTION_VERBS} not found")
 
-    words = re.findall(r'\b\w+\b', text.lower())
-    #holy return statement
-    return sum(1 for word in words if word in ACTION_VERBS)
-
+    lemmatizer = WordNetLemmatizer()
+    print("nlp spun up")
+    return action_verbs, lemmatizer
 
 #MAIN STUFF
 
 def analyze_text(text):
 #return all the things in a dict for a single block of text
+
+    #we have to use the nltk tokenizer to parse the text
+    tokens = nltk.word_tokenize(text)
+    #now we find tag all the words to identify their part of speech
+    tagged_words = nltk.pos_tag(tokens)
+    
+    count, verbs_list = verb_finder(tagged_words, action_verbs, lemmatizer)
+
+
     return {
         # Effort metrics
         'word_count': count_words(text),
@@ -232,17 +272,19 @@ def analyze_text(text):
         'keyword_ratio': keyword_ratio(text),
 
         # Readability
-        'FRE_score': flesch_reading_ease(text),
-        'GF_score': gunning_fog(text),
-        'DC_score': dale_chall(text),
+        #'FRE_score': flesch_reading_ease(text),
+        #'GF_score': gunning_fog(text),
+        #'DC_score': dale_chall(text),
         'ARI_score': ari_score(text),
+        'Readability_score': readability_score(text),
 
         # Spelling and grammar
         'grammar_errors': grammar_errors(text),
         'grammar_score': grammar_score(text),
 
         # Action verbs
-        'action_verbs_count': action_verb_count(text)
+        'verb_count': count,
+        'verb_list': verbs_list
     }
 
 
@@ -251,7 +293,10 @@ def analyze_dataframe(df, text_col='SKILLS', id_col='ID'):
     #analyze all texts in df
     #args: id column and text_col 
     #returns: DataFrame with ID and all metrics, the metrics are all in a single dict within the df for an ID
-    
+
+    #do not touch
+    action_verbs, lemmatizer = nlp_spin_up(ACTION_VERBS)
+
     results = []
 
     for _, row in df.iterrows():
@@ -280,8 +325,8 @@ if __name__ == "__main__":
         print(results.head())
 
         # Save results, change the name to specify
-        results.to_excel('R1V2Results.xlsx', index=False)
-        print("\nsaved as: R1V2Results.xlsx")
+        results.to_excel('results.xlsx', index=False)
+        print("\nsaved as: results.xlsx")
 
     except FileNotFoundError:
         print("Excel file not found")
